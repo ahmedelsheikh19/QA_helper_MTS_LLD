@@ -5,8 +5,8 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 block_cipher = None
 
 a = Analysis(
-    ['gui.py'],
-    pathex=[os.path.abspath('.')],
+    ['src/gui.py'],
+    pathex=[os.path.abspath('src')],
     binaries=[],
     datas=[
         # bundle customtkinter's themes/assets
