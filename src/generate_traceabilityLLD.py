@@ -4,43 +4,14 @@ import logging
 import re
 import os
 
+from req_loader import load_requirements, add_filter_args, parse_filters
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-def extract_reqs_from_req_file(file_path):
-    """
-    Reads the Requirements Excel file and extracts IDs.
-    Looks for a column named 'ID' or 'Object Identifier'.
-    """
-    logging.info(f"Loading Requirements file: {file_path}")
-    wb = openpyxl.load_workbook(file_path, data_only=True)
-    sheet = wb.active
-    
-    req_ids = set()
-    id_col_idx = None
-    
-    # Find the column index for ID
-    for col_idx, cell in enumerate(sheet[1], start=1):
-        if cell.value and str(cell.value).strip().lower() in ['id', 'object identifier']:
-            id_col_idx = col_idx
-            break
-            
-    if not id_col_idx:
-        logging.error("Could not find an 'ID' or 'Object Identifier' column in the Requirements file.")
-        return req_ids
-        
-    logging.info(f"Found ID column at index {id_col_idx}. Extracting requirements...")
-    
-    for row in sheet.iter_rows(min_row=2, min_col=id_col_idx, max_col=id_col_idx):
-        val = row[0].value
-        if val:
-            req_ids.add(str(val).strip())
-            
-    logging.info(f"Extracted {len(req_ids)} unique requirements from Requirements file.")
-    return req_ids
 
 def extract_reqs_from_lld_file(file_path):
     """
@@ -50,44 +21,43 @@ def extract_reqs_from_lld_file(file_path):
     logging.info(f"Loading LLD file: {file_path}")
     wb = openpyxl.load_workbook(file_path, data_only=True)
     sheet = wb.active
-    
+
     lld_reqs = set()
     req_col_idx = None
-    
-    # Find the column index for REQ
+
     for col_idx, cell in enumerate(sheet[1], start=1):
         if cell.value and str(cell.value).strip().upper() == 'REQ':
             req_col_idx = col_idx
             break
-            
+
     if not req_col_idx:
         logging.error("Could not find a 'REQ' column in the LLD file.")
         return lld_reqs
-        
+
     logging.info(f"Found REQ column at index {req_col_idx}. Extracting requirements...")
-    
+
     for row in sheet.iter_rows(min_row=2, min_col=req_col_idx, max_col=req_col_idx):
         val = row[0].value
         if val:
-            # Split by whitespace, newline, or commas to handle multiple reqs in one cell
             split_reqs = re.split(r'[\s,]+', str(val).strip())
             for req in split_reqs:
                 if req:
                     lld_reqs.add(req)
-                    
+
     logging.info(f"Extracted {len(lld_reqs)} unique requirements mapped in LLD file.")
     return lld_reqs
+
 
 def generate_html_report(req_ids, lld_reqs, output_file="traceability_report.html"):
     """
     Generates a modern, interactive HTML report showing the traceability gaps and coverages.
     """
     logging.info("Analyzing traceability coverages and gaps...")
-    
+
     covered_in_lld = req_ids.intersection(lld_reqs)
     missing_in_lld = req_ids - lld_reqs
     missing_in_reqs = lld_reqs - req_ids
-    
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -104,7 +74,7 @@ def generate_html_report(req_ids, lld_reqs, output_file="traceability_report.htm
             .card:hover {{ background: #bdc3c7; }}
             .card h3 {{ margin: 0; font-size: 24px; color: #2980b9; }}
             .card p {{ margin: 5px 0 0; color: #7f8c8d; font-weight: bold; }}
-            
+
             /* Specific Colors */
             .card.success h3 {{ color: #27ae60; }}
             .card.warning h3 {{ color: #e67e22; }}
@@ -127,7 +97,7 @@ def generate_html_report(req_ids, lld_reqs, output_file="traceability_report.htm
     <body>
         <div class="container">
             <h1>Bidirectional Traceability Report</h1>
-            
+
             <div class="summary">
                 <div class="card success" onclick="toggleSection('covered')">
                     <h3>{len(covered_in_lld)}</h3>
@@ -144,21 +114,21 @@ def generate_html_report(req_ids, lld_reqs, output_file="traceability_report.htm
             </div>
 
             <div id="covered" class="section active">
-                <h2>✅ Covered Requirements (Exist in Both)</h2>
+                <h2>Covered Requirements (Exist in Both)</h2>
                 <ul>
                     {''.join(f'<li>{req}</li>' for req in sorted(covered_in_lld))}
                 </ul>
             </div>
 
             <div id="missing-lld" class="section">
-                <h2>❌ Missing in LLD (Defined in Reqs, not implemented)</h2>
+                <h2>Missing in LLD (Defined in Reqs, not implemented)</h2>
                 <ul>
                     {''.join(f'<li>{req}</li>' for req in sorted(missing_in_lld))}
                 </ul>
             </div>
 
             <div id="missing-reqs" class="section">
-                <h2>⚠️ Unmapped in LLD (Exist in LLD, not in Reqs file)</h2>
+                <h2>Unmapped in LLD (Exist in LLD, not in Reqs file)</h2>
                 <ul>
                     {''.join(f'<li>{req}</li>' for req in sorted(missing_in_reqs))}
                 </ul>
@@ -167,36 +137,40 @@ def generate_html_report(req_ids, lld_reqs, output_file="traceability_report.htm
     </body>
     </html>
     """
-    
+
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html_content)
-        
+
     logging.info(f"Report successfully generated: {os.path.abspath(output_file)}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="Generate 2-way Traceability Matrix from Excel files.")
     parser.add_argument("req_file", help="Path to the Requirements Excel file")
     parser.add_argument("lld_file", help="Path to the LLD Excel file")
     parser.add_argument("-o", "--output", default="traceability_report.html", help="Output HTML report file name")
-    
+    add_filter_args(parser)
+
     args = parser.parse_args()
-    
+
     if not os.path.exists(args.req_file):
         logging.error(f"Requirements file not found: {args.req_file}")
         return
-        
+
     if not os.path.exists(args.lld_file):
         logging.error(f"LLD file not found: {args.lld_file}")
         return
-        
-    req_ids = extract_reqs_from_req_file(args.req_file)
+
+    filters = parse_filters(args.filter)
+    req_ids = load_requirements(args.req_file, filters=filters, filter_logic=args.filter_logic)
     lld_reqs = extract_reqs_from_lld_file(args.lld_file)
-    
+
     if not req_ids and not lld_reqs:
         logging.error("No requirements found in both files. Exiting.")
         return
-        
+
     generate_html_report(req_ids, lld_reqs, args.output)
+
 
 if __name__ == "__main__":
     main()

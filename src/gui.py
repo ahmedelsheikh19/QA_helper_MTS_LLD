@@ -6,6 +6,8 @@ import os
 import sys
 import webbrowser
 
+from req_loader import load_requirements, FILTER_COLUMNS
+
 # ── App-wide appearance ────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -46,7 +48,6 @@ class TextHandler(logging.Handler):
         def _insert():
             self.tb.configure(state="normal")
             self.tb.insert("end", msg)
-            # naive colorise last inserted line via tag — CTkTextbox wraps tk.Text
             self.tb._textbox.tag_add(record.levelname,
                                      f"end - {len(msg)+1}c", "end - 1c")
             self.tb._textbox.tag_config(record.levelname, foreground=color)
@@ -153,11 +154,131 @@ class OutputRow(ctk.CTkFrame):
         return self._var.get().strip()
 
 
+# ── Single filter row ─────────────────────────────────────────────────────
+class FilterRow(ctk.CTkFrame):
+    """One row: column dropdown + values checkboxes + remove button."""
+
+    def __init__(self, parent, on_remove, **kw):
+        super().__init__(parent, fg_color="#252540", corner_radius=8, **kw)
+        self.columnconfigure(1, weight=1)
+        self._on_remove = on_remove
+        self._check_vars = {}
+
+        # Column dropdown
+        columns = list(FILTER_COLUMNS.keys())
+        self._col_var = ctk.StringVar(value=columns[0] if columns else "")
+        self._dropdown = ctk.CTkOptionMenu(
+            self, values=columns, variable=self._col_var,
+            font=FONT_SMALL, width=160, height=32,
+            fg_color="#2d2d44", button_color="#3d3d5c",
+            command=self._on_column_change)
+        self._dropdown.grid(row=0, column=0, padx=(10, 8), pady=10, sticky="w")
+
+        # Values frame (checkboxes go here)
+        self._values_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._values_frame.grid(row=0, column=1, padx=4, pady=10, sticky="ew")
+
+        # Remove button
+        ctk.CTkButton(self, text="X", width=32, height=32,
+                      font=("Segoe UI", 12, "bold"),
+                      fg_color="#e74c3c", hover_color="#c0392b",
+                      command=self._remove).grid(row=0, column=2, padx=(4, 10), pady=10)
+
+        # Populate initial values
+        self._on_column_change(self._col_var.get())
+
+    def _on_column_change(self, col_name):
+        for widget in self._values_frame.winfo_children():
+            widget.destroy()
+        self._check_vars.clear()
+
+        values = FILTER_COLUMNS.get(col_name, [])
+        for val in values:
+            var = ctk.BooleanVar(value=False)
+            self._check_vars[val] = var
+            ctk.CTkCheckBox(self._values_frame, text=val, variable=var,
+                            font=FONT_SMALL, height=26,
+                            checkbox_width=18, checkbox_height=18
+                            ).pack(side="left", padx=(0, 10))
+
+    def _remove(self):
+        self._on_remove(self)
+
+    def get_filter(self):
+        """Return {"column": str, "values": [str]} or None if nothing selected."""
+        col = self._col_var.get()
+        selected = [val for val, var in self._check_vars.items() if var.get()]
+        if not selected:
+            return None
+        return {"column": col, "values": selected}
+
+
+# ── Filter section (manages multiple FilterRows) ─────────────────────────
+class FilterSection(ctk.CTkFrame):
+    """Dynamic filter builder: add/remove filter rows + AND/OR toggle."""
+
+    def __init__(self, parent, **kw):
+        super().__init__(parent, fg_color=COLOR_CARD, corner_radius=12, **kw)
+        self.columnconfigure(0, weight=1)
+
+        # Header row
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.pack(fill="x", padx=20, pady=(16, 8))
+
+        ctk.CTkLabel(header, text="Filters (optional)",
+                     font=("Segoe UI", 13, "bold"),
+                     text_color="#aabbcc").pack(side="left")
+
+        ctk.CTkButton(header, text="+ Add Filter", width=110, height=30,
+                      font=FONT_SMALL, fg_color="#2d2d44",
+                      hover_color="#3d3d5c",
+                      command=self._add_row).pack(side="right")
+
+        # AND / OR toggle
+        logic_frame = ctk.CTkFrame(self, fg_color="transparent")
+        logic_frame.pack(fill="x", padx=20, pady=(0, 4))
+
+        ctk.CTkLabel(logic_frame, text="Combine filters:",
+                     font=FONT_SMALL, text_color="#8899aa").pack(side="left", padx=(0, 8))
+
+        self._logic_var = ctk.StringVar(value="AND")
+        ctk.CTkRadioButton(logic_frame, text="AND (match all)",
+                           variable=self._logic_var, value="AND",
+                           font=FONT_SMALL).pack(side="left", padx=(0, 16))
+        ctk.CTkRadioButton(logic_frame, text="OR (match any)",
+                           variable=self._logic_var, value="OR",
+                           font=FONT_SMALL).pack(side="left")
+
+        # Container for filter rows
+        self._rows_frame = ctk.CTkFrame(self, fg_color="transparent")
+        self._rows_frame.pack(fill="x", padx=20, pady=(4, 16))
+        self._rows = []
+
+    def _add_row(self):
+        row = FilterRow(self._rows_frame, on_remove=self._remove_row)
+        row.pack(fill="x", pady=(0, 6))
+        self._rows.append(row)
+
+    def _remove_row(self, row):
+        row.destroy()
+        self._rows.remove(row)
+
+    def get_filters(self):
+        """Return (filters_list, filter_logic) ready for load_requirements()."""
+        filters = []
+        for row in self._rows:
+            f = row.get_filter()
+            if f:
+                filters.append(f)
+        return filters, self._logic_var.get()
+
+
 # ── Shared log + run section ───────────────────────────────────────────────
 class RunSection(ctk.CTkFrame):
     def __init__(self, parent, btn_label, btn_color, on_run, **kw):
         super().__init__(parent, fg_color="transparent", **kw)
         self.columnconfigure(0, weight=1)
+        self._btn_label = btn_label
 
         self.run_btn = ctk.CTkButton(
             self, text=btn_label, font=FONT_BTN,
@@ -190,8 +311,7 @@ class RunSection(ctk.CTkFrame):
             self.progress.configure(mode="indeterminate")
             self.progress.start()
         else:
-            self.run_btn.configure(state="normal",
-                                   text=self.run_btn._text)
+            self.run_btn.configure(state="normal", text=self._btn_label)
             self.progress.stop()
             self.progress.configure(mode="determinate")
             self.progress.set(1)
@@ -218,6 +338,7 @@ class LLDPanel(ctk.CTkScrollableFrame):
                      font=FONT_SMALL, text_color="#6677aa").grid(
             row=1, column=0, sticky="w", pady=(0, 20))
 
+        # Input files card
         card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
         card.grid(row=2, column=0, sticky="ew", pady=(0, 16))
         card.columnconfigure(0, weight=1)
@@ -229,18 +350,23 @@ class LLDPanel(ctk.CTkScrollableFrame):
         self.lld_row = FilePickerRow(card, "LLD Excel file (.xlsx)")
         self.lld_row.pack(fill="x", padx=20, pady=(0, 16))
 
+        # Filters card
+        self.filter_sec = FilterSection(self)
+        self.filter_sec.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+
+        # Output card
         card2 = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
-        card2.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+        card2.grid(row=4, column=0, sticky="ew", pady=(0, 16))
         card2.columnconfigure(0, weight=1)
         ctk.CTkLabel(card2, text="Output", font=("Segoe UI", 13, "bold"),
                      text_color="#aabbcc").pack(anchor="w", padx=20, pady=(16, 8))
         self.out_row = OutputRow(card2, "traceability_report.html")
         self.out_row.pack(fill="x", padx=20, pady=(0, 16))
 
-        self.run_sec = RunSection(self, btn_label="⚡  Generate LLD Report",
+        self.run_sec = RunSection(self, btn_label="Generate LLD Report",
                                   btn_color="#1a6eb5", on_run=self._run)
-        self.run_sec.grid(row=4, column=0, sticky="nsew", pady=(0, 16))
-        self.rowconfigure(4, weight=1)
+        self.run_sec.grid(row=5, column=0, sticky="nsew", pady=(0, 16))
+        self.rowconfigure(5, weight=1)
 
     def _run(self):
         req_file = self.req_row.get()
@@ -257,23 +383,25 @@ class LLDPanel(ctk.CTkScrollableFrame):
                                      f"{label} file not found:\n{path}")
                 return
 
+        filters, filter_logic = self.filter_sec.get_filters()
+
         self.run_sec.clear_log()
         self.run_sec.set_running(True)
         threading.Thread(target=self._worker,
-                         args=(req_file, lld_file, out_file),
+                         args=(req_file, lld_file, out_file, filters, filter_logic),
                          daemon=True).start()
 
-    def _worker(self, req_file, lld_file, out_file):
+    def _worker(self, req_file, lld_file, out_file, filters, filter_logic):
         logger  = logging.getLogger()
         handler = self.run_sec.handler()
         logger.addHandler(handler)
         try:
             from generate_traceabilityLLD import (
-                extract_reqs_from_req_file,
                 extract_reqs_from_lld_file,
                 generate_html_report,
             )
-            req_ids  = extract_reqs_from_req_file(req_file)
+            req_ids  = load_requirements(req_file, filters=filters,
+                                         filter_logic=filter_logic)
             lld_reqs = extract_reqs_from_lld_file(lld_file)
             if not req_ids and not lld_reqs:
                 logging.error("No requirements found in both files.")
@@ -301,6 +429,7 @@ class UTPanel(ctk.CTkScrollableFrame):
                      font=FONT_SMALL, text_color="#6677aa").grid(
             row=1, column=0, sticky="w", pady=(0, 20))
 
+        # Input files card
         card = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
         card.grid(row=2, column=0, sticky="ew", pady=(0, 16))
         card.columnconfigure(0, weight=1)
@@ -313,18 +442,23 @@ class UTPanel(ctk.CTkScrollableFrame):
                                      multi=True)
         self.ut_row.pack(fill="x", padx=20, pady=(0, 16))
 
+        # Filters card
+        self.filter_sec = FilterSection(self)
+        self.filter_sec.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+
+        # Output card
         card2 = ctk.CTkFrame(self, fg_color=COLOR_CARD, corner_radius=12)
-        card2.grid(row=3, column=0, sticky="ew", pady=(0, 16))
+        card2.grid(row=4, column=0, sticky="ew", pady=(0, 16))
         card2.columnconfigure(0, weight=1)
         ctk.CTkLabel(card2, text="Output", font=("Segoe UI", 13, "bold"),
                      text_color="#aabbcc").pack(anchor="w", padx=20, pady=(16, 8))
         self.out_row = OutputRow(card2, "ut_traceability_report.html")
         self.out_row.pack(fill="x", padx=20, pady=(0, 16))
 
-        self.run_sec = RunSection(self, btn_label="⚡  Generate UT Report",
+        self.run_sec = RunSection(self, btn_label="Generate UT Report",
                                   btn_color="#176b3a", on_run=self._run)
-        self.run_sec.grid(row=4, column=0, sticky="nsew", pady=(0, 16))
-        self.rowconfigure(4, weight=1)
+        self.run_sec.grid(row=5, column=0, sticky="nsew", pady=(0, 16))
+        self.rowconfigure(5, weight=1)
 
     def _run(self):
         req_file = self.req_row.get()
@@ -344,23 +478,25 @@ class UTPanel(ctk.CTkScrollableFrame):
                 messagebox.showerror("File not found", f"UT file not found:\n{f}")
                 return
 
+        filters, filter_logic = self.filter_sec.get_filters()
+
         self.run_sec.clear_log()
         self.run_sec.set_running(True)
         threading.Thread(target=self._worker,
-                         args=(req_file, ut_files, out_file),
+                         args=(req_file, ut_files, out_file, filters, filter_logic),
                          daemon=True).start()
 
-    def _worker(self, req_file, ut_files, out_file):
+    def _worker(self, req_file, ut_files, out_file, filters, filter_logic):
         logger  = logging.getLogger()
         handler = self.run_sec.handler()
         logger.addHandler(handler)
         try:
             from generate_ut_traceability import (
-                extract_reqs_from_req_file,
                 extract_reqs_from_ut_files,
                 generate_html_report,
             )
-            req_ids             = extract_reqs_from_req_file(req_file)
+            req_ids             = load_requirements(req_file, filters=filters,
+                                                    filter_logic=filter_logic)
             ut_reqs, fmt_errors = extract_reqs_from_ut_files(ut_files)
             if not req_ids and not ut_reqs:
                 logging.error("No requirements found in both files.")
@@ -389,12 +525,12 @@ class Sidebar(ctk.CTkFrame):
                      text_color="#c8d6e5",
                      justify="center").pack(pady=(28, 32), padx=16)
 
-        for key, label, icon in [
-            ("lld", "LLD Report",  "📐"),
-            ("ut",  "UT Report",   "🧪"),
+        for key, label in [
+            ("lld", "LLD Report"),
+            ("ut",  "UT Report"),
         ]:
             btn = ctk.CTkButton(
-                self, text=f"  {icon}  {label}", anchor="w",
+                self, text=f"  {label}", anchor="w",
                 font=("Segoe UI", 13), height=44,
                 fg_color="transparent", hover_color="#2a2a45",
                 text_color="#aabbdd", corner_radius=8,
@@ -405,7 +541,7 @@ class Sidebar(ctk.CTkFrame):
         # appearance toggle at bottom
         ctk.CTkLabel(self, text="").pack(expand=True)
         self._mode_btn = ctk.CTkButton(
-            self, text="☀  Light mode", anchor="w",
+            self, text="Light mode", anchor="w",
             font=FONT_SMALL, height=36, fg_color="transparent",
             hover_color="#2a2a45", text_color="#8899aa",
             command=self._toggle_mode)
@@ -426,15 +562,15 @@ class Sidebar(ctk.CTkFrame):
         mode = ctk.get_appearance_mode()
         if mode == "Dark":
             ctk.set_appearance_mode("light")
-            self._mode_btn.configure(text="🌙  Dark mode")
+            self._mode_btn.configure(text="Dark mode")
         else:
             ctk.set_appearance_mode("dark")
-            self._mode_btn.configure(text="☀  Light mode")
+            self._mode_btn.configure(text="Light mode")
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 def _prompt_open(path):
-    if messagebox.askyesno("Done ✓", f"Report saved to:\n{path}\n\nOpen in browser?"):
+    if messagebox.askyesno("Done", f"Report saved to:\n{path}\n\nOpen in browser?"):
         webbrowser.open(f"file:///{path}")
 
 
