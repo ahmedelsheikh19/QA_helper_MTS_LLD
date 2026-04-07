@@ -156,12 +156,13 @@ class OutputRow(ctk.CTkFrame):
 
 # ── Single filter row ─────────────────────────────────────────────────────
 class FilterRow(ctk.CTkFrame):
-    """One compact row: column dropdown + values dropdown + remove button."""
+    """One compact row: column dropdown + values checkboxes + remove button."""
 
-    def __init__(self, parent, on_remove, **kw):
+    def __init__(self, parent, on_remove, on_change, **kw):
         super().__init__(parent, fg_color="#252540", corner_radius=6, **kw)
         self.columnconfigure(1, weight=1)
         self._on_remove = on_remove
+        self._on_change = on_change
         self._check_vars = {}
 
         # Column dropdown
@@ -194,11 +195,13 @@ class FilterRow(ctk.CTkFrame):
         values = FILTER_COLUMNS.get(col_name, [])
         for i, val in enumerate(values):
             var = ctk.BooleanVar(value=False)
+            var.trace_add("write", lambda *_: self._on_change())
             self._check_vars[val] = var
             cb = ctk.CTkCheckBox(self._values_frame, text=val, variable=var,
                                  font=("Segoe UI", 10), height=22,
                                  checkbox_width=16, checkbox_height=16)
             cb.grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 8), pady=1)
+        self._on_change()
 
     def _remove(self):
         self._on_remove(self)
@@ -229,6 +232,7 @@ class FilterSection(ctk.CTkFrame):
                      text_color="#aabbcc").pack(side="left")
 
         self._logic_var = ctk.StringVar(value="AND")
+        self._logic_var.trace_add("write", lambda *_: self._update_summary())
         ctk.CTkRadioButton(header, text="OR", variable=self._logic_var,
                            value="OR", font=("Segoe UI", 10),
                            radiobutton_width=14, radiobutton_height=14
@@ -247,17 +251,45 @@ class FilterSection(ctk.CTkFrame):
 
         # Container for filter rows
         self._rows_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._rows_frame.pack(fill="x", padx=16, pady=(2, 10))
+        self._rows_frame.pack(fill="x", padx=16, pady=(2, 4))
         self._rows = []
 
+        # Live summary of active filters
+        self._summary_var = ctk.StringVar(value="No filters active")
+        self._summary_label = ctk.CTkLabel(
+            self, textvariable=self._summary_var,
+            font=("Segoe UI", 10), text_color="#66dd88",
+            anchor="w", wraplength=600, justify="left")
+        self._summary_label.pack(fill="x", padx=16, pady=(0, 10))
+
     def _add_row(self):
-        row = FilterRow(self._rows_frame, on_remove=self._remove_row)
+        row = FilterRow(self._rows_frame, on_remove=self._remove_row,
+                        on_change=self._update_summary)
         row.pack(fill="x", pady=(0, 4))
         self._rows.append(row)
+        self._update_summary()
 
     def _remove_row(self, row):
         row.destroy()
         self._rows.remove(row)
+        self._update_summary()
+
+    def _update_summary(self):
+        parts = []
+        for row in self._rows:
+            f = row.get_filter()
+            if f:
+                vals = ", ".join(f["values"])
+                parts.append(f"{f['column']}: {vals}")
+
+        if not parts:
+            self._summary_var.set("No filters active")
+            self._summary_label.configure(text_color="#8899aa")
+        else:
+            logic = self._logic_var.get()
+            joiner = f"  {logic}  "
+            self._summary_var.set("Active:  " + joiner.join(parts))
+            self._summary_label.configure(text_color="#66dd88")
 
     def get_filters(self):
         """Return (filters_list, filter_logic) ready for load_requirements()."""
