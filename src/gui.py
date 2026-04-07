@@ -154,6 +154,107 @@ class OutputRow(ctk.CTkFrame):
         return self._var.get().strip()
 
 
+# ── Tooltip helper ─────────────────────────────────────────────────────────
+class _Tooltip:
+    """Show tooltip on hover. Click anywhere or move mouse away to dismiss."""
+
+    def __init__(self, widget, text):
+        self._widget = widget
+        self._text = text
+        self._tw = None
+        self._poll_id = None
+        self._visible = False
+
+        widget.bind("<Button-1>", self._toggle)
+
+    def _toggle(self, event=None):
+        if self._visible:
+            self._hide()
+        else:
+            self._show()
+
+    def _show(self):
+        self._hide()
+        x = self._widget.winfo_rootx()
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 4
+        self._tw = tw = ctk.CTkToplevel(self._widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        tw.attributes("-topmost", True)
+        tw.configure(fg_color="#1e2a3a")
+        label = ctk.CTkLabel(tw, text=self._text, font=("Segoe UI", 11),
+                             fg_color="#1e2a3a", text_color="#e0e8f0",
+                             corner_radius=8, justify="left",
+                             wraplength=380, padx=14, pady=10)
+        label.pack()
+        self._visible = True
+
+        # Dismiss on any click or key press anywhere in the app
+        root = self._widget.winfo_toplevel()
+        root.bind_all("<Button-1>", self._on_global_click)
+        root.bind_all("<Key>", self._hide)
+        root.bind("<Unmap>", self._hide, add="+")
+        root.bind("<FocusOut>", self._hide, add="+")
+
+        # Poll to dismiss when cursor moves far away
+        self._poll_id = self._widget.after(300, self._check_cursor)
+
+    def _on_global_click(self, event):
+        # Don't dismiss if clicking the help button itself (toggle handles that)
+        try:
+            wx = self._widget.winfo_rootx()
+            wy = self._widget.winfo_rooty()
+            ww = self._widget.winfo_width()
+            wh = self._widget.winfo_height()
+            if wx <= event.x_root <= wx + ww and wy <= event.y_root <= wy + wh:
+                return
+        except Exception:
+            pass
+        self._hide()
+
+    def _check_cursor(self):
+        if not self._visible:
+            return
+        try:
+            mx = self._widget.winfo_pointerx()
+            my = self._widget.winfo_pointery()
+            wx = self._widget.winfo_rootx()
+            wy = self._widget.winfo_rooty()
+            ww = self._widget.winfo_width()
+            wh = self._widget.winfo_height()
+            # Include tooltip window area in bounds check
+            tw_bottom = wy + wh
+            tw_right = wx + ww
+            if self._tw:
+                tw_bottom = max(tw_bottom,
+                                self._tw.winfo_rooty() + self._tw.winfo_height())
+                tw_right = max(tw_right,
+                               self._tw.winfo_rootx() + self._tw.winfo_width())
+            margin = 30
+            if mx < wx - margin or mx > tw_right + margin or \
+               my < wy - margin or my > tw_bottom + margin:
+                self._hide()
+                return
+            self._poll_id = self._widget.after(300, self._check_cursor)
+        except Exception:
+            self._hide()
+
+    def _hide(self, event=None):
+        if self._poll_id:
+            self._widget.after_cancel(self._poll_id)
+            self._poll_id = None
+        if self._tw:
+            self._tw.destroy()
+            self._tw = None
+        self._visible = False
+        try:
+            root = self._widget.winfo_toplevel()
+            root.unbind_all("<Button-1>")
+            root.unbind_all("<Key>")
+        except Exception:
+            pass
+
+
 # ── Single filter row ─────────────────────────────────────────────────────
 class FilterRow(ctk.CTkFrame):
     """One compact row: column dropdown + values checkboxes + remove button."""
@@ -230,6 +331,26 @@ class FilterSection(ctk.CTkFrame):
         ctk.CTkLabel(header, text="Filters",
                      font=("Segoe UI", 12, "bold"),
                      text_color="#aabbcc").pack(side="left")
+
+        # Help button with tooltip on hover
+        self._help_btn = ctk.CTkButton(
+            header, text="?  Help", width=60, height=24,
+            font=("Segoe UI", 10, "bold"), fg_color="#3a5068",
+            hover_color="#4a6078", text_color="#e0e8f0",
+            corner_radius=12, cursor="question_arrow",
+            command=lambda: None)
+        self._help_btn.pack(side="left", padx=(10, 0))
+
+        tooltip_text = (
+            "How to use filters:\n\n"
+            "1. Click '+ Add' to create a filter row\n"
+            "2. Pick a column and check the values to include\n"
+            "3. Multiple values in one row = match ANY of them\n"
+            "4. Multiple rows with AND = must match ALL rows\n"
+            "5. Multiple rows with OR = match ANY row\n"
+            "6. No filters = all requirements included"
+        )
+        self._tooltip = _Tooltip(self._help_btn, tooltip_text)
 
         self._logic_var = ctk.StringVar(value="AND")
         self._logic_var.trace_add("write", lambda *_: self._update_summary())
@@ -423,6 +544,7 @@ class LLDPanel(ctk.CTkScrollableFrame):
         logger  = logging.getLogger()
         handler = self.run_sec.handler()
         logger.addHandler(handler)
+        abs_out = None
         try:
             from generate_traceabilityLLD import (
                 extract_reqs_from_lld_file,
@@ -436,12 +558,16 @@ class LLDPanel(ctk.CTkScrollableFrame):
             else:
                 generate_html_report(req_ids, lld_reqs, out_file)
                 abs_out = os.path.abspath(out_file)
-                self.after(0, lambda: _prompt_open(abs_out))
         except Exception as e:
             logging.error(f"Unexpected error: {e}")
         finally:
             logger.removeHandler(handler)
-            self.after(0, lambda: self.run_sec.set_running(False))
+            self.after(0, lambda: self._on_done(abs_out))
+
+    def _on_done(self, abs_out):
+        self.run_sec.set_running(False)
+        if abs_out:
+            _prompt_open(abs_out)
 
 
 # ── UT panel ──────────────────────────────────────────────────────────────
@@ -518,6 +644,7 @@ class UTPanel(ctk.CTkScrollableFrame):
         logger  = logging.getLogger()
         handler = self.run_sec.handler()
         logger.addHandler(handler)
+        abs_out = None
         try:
             from generate_ut_traceability import (
                 extract_reqs_from_ut_files,
@@ -531,12 +658,16 @@ class UTPanel(ctk.CTkScrollableFrame):
             else:
                 generate_html_report(req_ids, ut_reqs, fmt_errors, out_file)
                 abs_out = os.path.abspath(out_file)
-                self.after(0, lambda: _prompt_open(abs_out))
         except Exception as e:
             logging.error(f"Unexpected error: {e}")
         finally:
             logger.removeHandler(handler)
-            self.after(0, lambda: self.run_sec.set_running(False))
+            self.after(0, lambda: self._on_done(abs_out))
+
+    def _on_done(self, abs_out):
+        self.run_sec.set_running(False)
+        if abs_out:
+            _prompt_open(abs_out)
 
 
 # ── Sidebar nav ───────────────────────────────────────────────────────────
