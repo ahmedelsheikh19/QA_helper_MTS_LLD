@@ -4,6 +4,7 @@
 # PyInstaller build output
 build/
 dist/
+BuildOutput/
 
 # Python cache
 __pycache__/

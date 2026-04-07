@@ -15,6 +15,7 @@ a = Analysis(
     hiddenimports=[
         *collect_submodules('customtkinter'),
         'openpyxl',
+        'req_loader',
         'generate_traceabilityLLD',
         'generate_ut_traceability',
     ],
