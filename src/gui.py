@@ -156,10 +156,10 @@ class OutputRow(ctk.CTkFrame):
 
 # ── Single filter row ─────────────────────────────────────────────────────
 class FilterRow(ctk.CTkFrame):
-    """One row: column dropdown + values checkboxes + remove button."""
+    """One compact row: column dropdown + values dropdown + remove button."""
 
     def __init__(self, parent, on_remove, **kw):
-        super().__init__(parent, fg_color="#252540", corner_radius=8, **kw)
+        super().__init__(parent, fg_color="#252540", corner_radius=6, **kw)
         self.columnconfigure(1, weight=1)
         self._on_remove = on_remove
         self._check_vars = {}
@@ -169,22 +169,21 @@ class FilterRow(ctk.CTkFrame):
         self._col_var = ctk.StringVar(value=columns[0] if columns else "")
         self._dropdown = ctk.CTkOptionMenu(
             self, values=columns, variable=self._col_var,
-            font=FONT_SMALL, width=160, height=32,
+            font=FONT_SMALL, width=150, height=28,
             fg_color="#2d2d44", button_color="#3d3d5c",
             command=self._on_column_change)
-        self._dropdown.grid(row=0, column=0, padx=(10, 8), pady=10, sticky="w")
+        self._dropdown.grid(row=0, column=0, padx=(8, 6), pady=6, sticky="w")
 
-        # Values frame (checkboxes go here)
+        # Values frame (checkboxes in a compact grid)
         self._values_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._values_frame.grid(row=0, column=1, padx=4, pady=10, sticky="ew")
+        self._values_frame.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
 
         # Remove button
-        ctk.CTkButton(self, text="X", width=32, height=32,
-                      font=("Segoe UI", 12, "bold"),
+        ctk.CTkButton(self, text="X", width=28, height=28,
+                      font=("Segoe UI", 11, "bold"),
                       fg_color="#e74c3c", hover_color="#c0392b",
-                      command=self._remove).grid(row=0, column=2, padx=(4, 10), pady=10)
+                      command=self._remove).grid(row=0, column=2, padx=(4, 8), pady=6)
 
-        # Populate initial values
         self._on_column_change(self._col_var.get())
 
     def _on_column_change(self, col_name):
@@ -193,13 +192,13 @@ class FilterRow(ctk.CTkFrame):
         self._check_vars.clear()
 
         values = FILTER_COLUMNS.get(col_name, [])
-        for val in values:
+        for i, val in enumerate(values):
             var = ctk.BooleanVar(value=False)
             self._check_vars[val] = var
-            ctk.CTkCheckBox(self._values_frame, text=val, variable=var,
-                            font=FONT_SMALL, height=26,
-                            checkbox_width=18, checkbox_height=18
-                            ).pack(side="left", padx=(0, 10))
+            cb = ctk.CTkCheckBox(self._values_frame, text=val, variable=var,
+                                 font=("Segoe UI", 10), height=22,
+                                 checkbox_width=16, checkbox_height=16)
+            cb.grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 8), pady=1)
 
     def _remove(self):
         self._on_remove(self)
@@ -221,42 +220,39 @@ class FilterSection(ctk.CTkFrame):
         super().__init__(parent, fg_color=COLOR_CARD, corner_radius=12, **kw)
         self.columnconfigure(0, weight=1)
 
-        # Header row
+        # Header row with AND/OR and Add button all in one line
         header = ctk.CTkFrame(self, fg_color="transparent")
-        header.pack(fill="x", padx=20, pady=(16, 8))
+        header.pack(fill="x", padx=16, pady=(10, 4))
 
-        ctk.CTkLabel(header, text="Filters (optional)",
-                     font=("Segoe UI", 13, "bold"),
+        ctk.CTkLabel(header, text="Filters",
+                     font=("Segoe UI", 12, "bold"),
                      text_color="#aabbcc").pack(side="left")
 
-        ctk.CTkButton(header, text="+ Add Filter", width=110, height=30,
-                      font=FONT_SMALL, fg_color="#2d2d44",
-                      hover_color="#3d3d5c",
-                      command=self._add_row).pack(side="right")
-
-        # AND / OR toggle
-        logic_frame = ctk.CTkFrame(self, fg_color="transparent")
-        logic_frame.pack(fill="x", padx=20, pady=(0, 4))
-
-        ctk.CTkLabel(logic_frame, text="Combine filters:",
-                     font=FONT_SMALL, text_color="#8899aa").pack(side="left", padx=(0, 8))
-
         self._logic_var = ctk.StringVar(value="AND")
-        ctk.CTkRadioButton(logic_frame, text="AND (match all)",
-                           variable=self._logic_var, value="AND",
-                           font=FONT_SMALL).pack(side="left", padx=(0, 16))
-        ctk.CTkRadioButton(logic_frame, text="OR (match any)",
-                           variable=self._logic_var, value="OR",
-                           font=FONT_SMALL).pack(side="left")
+        ctk.CTkRadioButton(header, text="OR", variable=self._logic_var,
+                           value="OR", font=("Segoe UI", 10),
+                           radiobutton_width=14, radiobutton_height=14
+                           ).pack(side="right", padx=(0, 8))
+        ctk.CTkRadioButton(header, text="AND", variable=self._logic_var,
+                           value="AND", font=("Segoe UI", 10),
+                           radiobutton_width=14, radiobutton_height=14
+                           ).pack(side="right", padx=(0, 6))
+        ctk.CTkLabel(header, text="Logic:", font=("Segoe UI", 10),
+                     text_color="#8899aa").pack(side="right", padx=(0, 4))
+
+        ctk.CTkButton(header, text="+ Add", width=70, height=26,
+                      font=("Segoe UI", 10), fg_color="#2d2d44",
+                      hover_color="#3d3d5c",
+                      command=self._add_row).pack(side="right", padx=(0, 16))
 
         # Container for filter rows
         self._rows_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self._rows_frame.pack(fill="x", padx=20, pady=(4, 16))
+        self._rows_frame.pack(fill="x", padx=16, pady=(2, 10))
         self._rows = []
 
     def _add_row(self):
         row = FilterRow(self._rows_frame, on_remove=self._remove_row)
-        row.pack(fill="x", pady=(0, 6))
+        row.pack(fill="x", pady=(0, 4))
         self._rows.append(row)
 
     def _remove_row(self, row):
