@@ -6,7 +6,7 @@ import os
 import sys
 import webbrowser
 
-from req_loader import load_requirements, FILTER_COLUMNS
+from req_loader import load_requirements, scan_filterable_columns
 
 # ── App-wide appearance ────────────────────────────────────────────────────
 ctk.set_appearance_mode("dark")
@@ -59,7 +59,7 @@ class TextHandler(logging.Handler):
 
 # ── Reusable file-picker row ───────────────────────────────────────────────
 class FilePickerRow(ctk.CTkFrame):
-    def __init__(self, parent, label, multi=False, **kw):
+    def __init__(self, parent, label, multi=False, on_change=None, **kw):
         super().__init__(parent, fg_color="transparent", **kw)
         self.multi = multi
         self.columnconfigure(0, weight=1)
@@ -70,6 +70,9 @@ class FilePickerRow(ctk.CTkFrame):
 
         if not multi:
             self._var = ctk.StringVar()
+            if on_change is not None:
+                self._var.trace_add("write",
+                                    lambda *_: on_change(self._var.get().strip()))
             self._entry = ctk.CTkEntry(self, textvariable=self._var,
                                        font=FONT_SMALL, height=36,
                                        placeholder_text="Select file…")
@@ -259,16 +262,18 @@ class _Tooltip:
 class FilterRow(ctk.CTkFrame):
     """One compact row: column dropdown + values checkboxes + remove button."""
 
-    def __init__(self, parent, on_remove, on_change, **kw):
+    PLACEHOLDER = "(load req file)"
+
+    def __init__(self, parent, on_remove, on_change, schema=None, **kw):
         super().__init__(parent, fg_color="#252540", corner_radius=6, **kw)
         self.columnconfigure(1, weight=1)
         self._on_remove = on_remove
         self._on_change = on_change
         self._check_vars = {}
+        self._schema = schema or {}
 
-        # Column dropdown
-        columns = list(FILTER_COLUMNS.keys())
-        self._col_var = ctk.StringVar(value=columns[0] if columns else "")
+        columns = list(self._schema.keys()) or [self.PLACEHOLDER]
+        self._col_var = ctk.StringVar(value=columns[0])
         self._dropdown = ctk.CTkOptionMenu(
             self, values=columns, variable=self._col_var,
             font=FONT_SMALL, width=150, height=28,
@@ -276,11 +281,9 @@ class FilterRow(ctk.CTkFrame):
             command=self._on_column_change)
         self._dropdown.grid(row=0, column=0, padx=(8, 6), pady=6, sticky="w")
 
-        # Values frame (checkboxes in a compact grid)
         self._values_frame = ctk.CTkFrame(self, fg_color="transparent")
         self._values_frame.grid(row=0, column=1, padx=4, pady=6, sticky="ew")
 
-        # Remove button
         ctk.CTkButton(self, text="X", width=28, height=28,
                       font=("Segoe UI", 11, "bold"),
                       fg_color="#e74c3c", hover_color="#c0392b",
@@ -293,7 +296,7 @@ class FilterRow(ctk.CTkFrame):
             widget.destroy()
         self._check_vars.clear()
 
-        values = FILTER_COLUMNS.get(col_name, [])
+        values = self._schema.get(col_name, [])
         for i, val in enumerate(values):
             var = ctk.BooleanVar(value=False)
             var.trace_add("write", lambda *_: self._on_change())
@@ -304,12 +307,34 @@ class FilterRow(ctk.CTkFrame):
             cb.grid(row=i // 4, column=i % 4, sticky="w", padx=(0, 8), pady=1)
         self._on_change()
 
+    def set_schema(self, schema):
+        """Refresh available columns and values, preserving selections where possible."""
+        prev_col = self._col_var.get()
+        prev_selected = {val for val, var in self._check_vars.items() if var.get()}
+
+        self._schema = schema or {}
+        columns = list(self._schema.keys()) or [self.PLACEHOLDER]
+        self._dropdown.configure(values=columns)
+
+        if prev_col in self._schema:
+            self._col_var.set(prev_col)
+        else:
+            self._col_var.set(columns[0])
+
+        self._on_column_change(self._col_var.get())
+
+        for val in prev_selected:
+            if val in self._check_vars:
+                self._check_vars[val].set(True)
+
     def _remove(self):
         self._on_remove(self)
 
     def get_filter(self):
         """Return {"column": str, "values": [str]} or None if nothing selected."""
         col = self._col_var.get()
+        if col == self.PLACEHOLDER:
+            return None
         selected = [val for val, var in self._check_vars.items() if var.get()]
         if not selected:
             return None
@@ -323,6 +348,7 @@ class FilterSection(ctk.CTkFrame):
     def __init__(self, parent, **kw):
         super().__init__(parent, fg_color=COLOR_CARD, corner_radius=12, **kw)
         self.columnconfigure(0, weight=1)
+        self._schema = {}
 
         # Header row with AND/OR and Add button all in one line
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -385,9 +411,16 @@ class FilterSection(ctk.CTkFrame):
 
     def _add_row(self):
         row = FilterRow(self._rows_frame, on_remove=self._remove_row,
-                        on_change=self._update_summary)
+                        on_change=self._update_summary, schema=self._schema)
         row.pack(fill="x", pady=(0, 4))
         self._rows.append(row)
+        self._update_summary()
+
+    def set_schema(self, schema):
+        """Update schema for this section and propagate to all existing rows."""
+        self._schema = schema or {}
+        for row in self._rows:
+            row.set_schema(self._schema)
         self._update_summary()
 
     def _remove_row(self, row):
@@ -494,7 +527,8 @@ class LLDPanel(ctk.CTkScrollableFrame):
         ctk.CTkLabel(card, text="Input Files", font=("Segoe UI", 13, "bold"),
                      text_color="#aabbcc").pack(anchor="w", padx=20, pady=(16, 8))
 
-        self.req_row = FilePickerRow(card, "Requirements Excel file (.xlsx)")
+        self.req_row = FilePickerRow(card, "Requirements Excel file (.xlsx)",
+                                     on_change=self._on_req_changed)
         self.req_row.pack(fill="x", padx=20, pady=(0, 12))
         self.lld_row = FilePickerRow(card, "LLD Excel file (.xlsx)")
         self.lld_row.pack(fill="x", padx=20, pady=(0, 16))
@@ -516,6 +550,18 @@ class LLDPanel(ctk.CTkScrollableFrame):
                                   btn_color="#1a6eb5", on_run=self._run)
         self.run_sec.grid(row=5, column=0, sticky="nsew", pady=(0, 16))
         self.rowconfigure(5, weight=1)
+
+    def _on_req_changed(self, path):
+        if not path or not os.path.exists(path):
+            self.filter_sec.set_schema({})
+            return
+        try:
+            schema = scan_filterable_columns(path)
+        except Exception as e:
+            logging.error(f"Failed to scan req file '{path}': {e}")
+            self.filter_sec.set_schema({})
+            return
+        self.filter_sec.set_schema(schema)
 
     def _run(self):
         req_file = self.req_row.get()
@@ -590,7 +636,8 @@ class UTPanel(ctk.CTkScrollableFrame):
         ctk.CTkLabel(card, text="Input Files", font=("Segoe UI", 13, "bold"),
                      text_color="#aabbcc").pack(anchor="w", padx=20, pady=(16, 8))
 
-        self.req_row = FilePickerRow(card, "Requirements Excel file (.xlsx)")
+        self.req_row = FilePickerRow(card, "Requirements Excel file (.xlsx)",
+                                     on_change=self._on_req_changed)
         self.req_row.pack(fill="x", padx=20, pady=(0, 12))
         self.ut_row  = FilePickerRow(card, "UT Excel file(s) — add one or more",
                                      multi=True)
@@ -613,6 +660,18 @@ class UTPanel(ctk.CTkScrollableFrame):
                                   btn_color="#176b3a", on_run=self._run)
         self.run_sec.grid(row=5, column=0, sticky="nsew", pady=(0, 16))
         self.rowconfigure(5, weight=1)
+
+    def _on_req_changed(self, path):
+        if not path or not os.path.exists(path):
+            self.filter_sec.set_schema({})
+            return
+        try:
+            schema = scan_filterable_columns(path)
+        except Exception as e:
+            logging.error(f"Failed to scan req file '{path}': {e}")
+            self.filter_sec.set_schema({})
+            return
+        self.filter_sec.set_schema(schema)
 
     def _run(self):
         req_file = self.req_row.get()

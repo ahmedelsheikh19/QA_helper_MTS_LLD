@@ -86,8 +86,10 @@ def load_requirements(file_path, filters=None, filter_logic="AND"):
                 logging.warning(f"Filter column '{col_name}' not found in file — skipping.")
                 continue
             filter_cols.append({
+                "name": col_name,
                 "index": headers[col_name],
                 "values": {v.strip().lower() for v in f["values"]},
+                "seen": set(),
             })
 
         if not filter_cols:
@@ -106,6 +108,7 @@ def load_requirements(file_path, filters=None, filter_logic="AND"):
             for fc in filter_cols:
                 cell_val = row[fc["index"] - 1].value
                 cell_str = str(cell_val).strip().lower() if cell_val else ""
+                fc["seen"].add(cell_str)
                 matches.append(cell_str in fc["values"])
 
             if filter_logic.upper() == "AND" and not all(matches):
@@ -115,9 +118,70 @@ def load_requirements(file_path, filters=None, filter_logic="AND"):
 
         req_ids.add(str(cell_id).strip())
 
+    # ── Warn about requested filter values that don't exist in the data ──
+    for fc in filter_cols:
+        unmatched = fc["values"] - fc["seen"]
+        if unmatched:
+            available = sorted(v for v in fc["seen"] if v)
+            logging.warning(
+                f"Filter '{fc['name']}': value(s) not found in column → "
+                f"{sorted(unmatched)}. Available values: {available}"
+            )
+
     logging.info(f"Extracted {len(req_ids)} requirements (filter_logic={filter_logic}, "
                  f"active_filters={len(filter_cols)}).")
     return req_ids
+
+
+# ── Schema discovery (used by the GUI) ───────────────────────────────────────
+
+def scan_filterable_columns(file_path):
+    """
+    Read an Excel file and return {column_name: sorted_unique_values_list}.
+
+    Used by the GUI to populate filter dropdowns dynamically. Excludes the
+    ID/Object Identifier column. Drops columns with no non-empty values.
+    For duplicate header names, the rightmost column wins (matches the
+    behaviour of load_requirements()).
+    """
+    logging.info(f"Scanning filterable columns in: {file_path}")
+    wb = openpyxl.load_workbook(file_path, data_only=True, read_only=True)
+    try:
+        sheet = wb.active
+        rows_iter = sheet.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            return {}
+
+        skip = {"id", "object identifier"}
+        header_map = {}  # name -> 0-based column index
+        for idx, val in enumerate(header_row):
+            if val is None:
+                continue
+            name = str(val).strip()
+            if not name or name.lower() in skip:
+                continue
+            header_map[name] = idx  # later duplicates overwrite earlier ones
+
+        if not header_map:
+            return {}
+
+        unique = {name: set() for name in header_map}
+        for row in rows_iter:
+            for name, idx in header_map.items():
+                if idx >= len(row):
+                    continue
+                cell_val = row[idx]
+                if cell_val is None:
+                    continue
+                s = str(cell_val).strip()
+                if s:
+                    unique[name].add(s)
+
+        return {name: sorted(vals) for name, vals in unique.items() if vals}
+    finally:
+        wb.close()
 
 
 # ── CLI helpers ──────────────────────────────────────────────────────────────
